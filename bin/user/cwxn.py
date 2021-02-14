@@ -1,9 +1,13 @@
 # Copyright 2014-2020 Matthew Wall
-# Distributed under terms of the GPLv3                                          
-"""Emit loop data to wxnow.txt file with Cumulus format:
-   http://wiki.sandaysoft.com/a/Wxnow.txt
+# Distributed under terms of the GPLv3
+"""
+Emit loop data to wxnow.txt file with Cumulus format
 
-Put this file in bin/user/cwxn.py, then add this to your weewx.conf:
+The Cumulus wxnow.txt file format is detailed in the Cumulus Wiki:
+    https://cumuluswiki.org/a/Wxnow.txt
+
+Put this file in the weewx 'user' directory, then add the following to the
+weewx configuration file:
 
 [CumulusWXNow]
     filename = /path/to/wxnow.txt
@@ -16,9 +20,7 @@ Put this file in bin/user/cwxn.py, then add this to your weewx.conf:
 # FIXME: when value is None, we insert a 0.  but is there something in the
 #        aprs spec that is more appropriate?
 
-import math
 import time
-import syslog
 
 import weewx
 import weewx.wxformulas
@@ -26,34 +28,51 @@ import weeutil.weeutil
 import weeutil.Sun
 from weewx.engine import StdService
 
+try:
+    # WeeWX4 logging
+    import logging
+    from weeutil.logger import log_traceback
+
+    log = logging.getLogger(__name__)
+
+    def logdbg(msg):
+        log.debug(msg)
+
+    def loginf(msg):
+        log.info(msg)
+
+    def logerr(msg):
+        log.error(msg)
+
+    def log_traceback_error(prefix=''):
+        log_traceback(log.error, prefix=prefix)
+
+except ImportError:
+    # WeeWX legacy (v3) logging via syslog
+    import syslog
+    from weeutil.weeutil import log_traceback
+
+    def logmsg(level, msg):
+        syslog.syslog(level, 'cwxn: %s' % msg)
+
+    def logdbg(msg):
+        logmsg(syslog.LOG_DEBUG, msg)
+
+    def loginf(msg):
+        logmsg(syslog.LOG_INFO, msg)
+
+    def logerr(msg):
+        logmsg(syslog.LOG_ERR, msg)
+
+    def log_traceback_error(prefix=''):
+        log_traceback(prefix=prefix, loglevel=syslog.LOG_ERR)
+
 VERSION = "0.5"
 
 if weewx.__version__ < "3":
-    raise weewx.UnsupportedFeature("weewx 3 is required, found %s" %
+    raise weewx.UnsupportedFeature("WeeWX 3 is required, found %s" %
                                    weewx.__version__)
 
-try:
-    # Test for new-style weewx logging by trying to import weeutil.logger
-    import weeutil.logger
-    import logging
-    log = logging.getLogger(__name__)
-    def logdbg(msg):
-        log.debug(msg)
-    def loginf(msg):
-        log.info(msg)
-    def logerr(msg):
-        log.error(msg)
-except ImportError:
-    # Old-style weewx logging
-    import syslog
-    def logmsg(level, msg):
-        syslog.syslog(level, 'cwxn: %s' % msg)
-    def logdbg(msg):
-        logmsg(syslog.LOG_DEBUG, msg)
-    def loginf(msg):
-        logmsg(syslog.LOG_INFO, msg)
-    def logerr(msg):
-        logmsg(syslog.LOG_ERR, msg)
 
 def convert(v, metric, group, from_unit_system, to_units):
     ut = weewx.units.getStandardUnitType(from_unit_system, metric)
@@ -61,10 +80,12 @@ def convert(v, metric, group, from_unit_system, to_units):
     v = weewx.units.convert(vt, to_units)[0]
     return v
 
+
 def nullproof(key, data):
     if key in data and data[key] is not None:
         return data[key]
     return 0
+
 
 def calcRainHour(dbm, ts):
     sts = ts - 3600
@@ -74,6 +95,27 @@ def calcRainHour(dbm, ts):
     if val is None:
         return None
     return val[0]
+
+
+def calcRain24(dbm, ts):
+    sts = ts - 86400
+    val = dbm.getSql("SELECT SUM(rain) FROM %s "
+                     "WHERE dateTime>? AND dateTime<=?" % dbm.table_name,
+                     (sts, ts))
+    if val is None:
+        return None
+    return val[0]
+
+
+def calcDayRain(dbm, ts):
+    sts = weeutil.weeutil.startOfDay(ts)
+    val = dbm.getSql("SELECT SUM(rain) FROM %s "
+                     "WHERE dateTime>? AND dateTime<=?" % dbm.table_name,
+                     (sts, ts))
+    if val is None:
+        return None
+    return val[0]
+
 
 class CumulusWXNow(StdService):
 
@@ -102,8 +144,8 @@ class CumulusWXNow(StdService):
             dbm = self.engine.db_binder.get_manager('wx_binding')
             data = self.calculate(event_data, dbm)
             self.write_data(data)
-        except Exception, e:
-            weeutil.weeutil.log_traceback('cwxn: **** ')
+        except Exception as e:
+            log_traceback_error('cwxn: **** ')
 
     def calculate(self, packet, archive):
         pu = packet.get('usUnits')
@@ -120,9 +162,17 @@ class CumulusWXNow(StdService):
         if v is None:
             v = 0
         data['hourRain'] = convert(v, 'rain', 'group_rain', pu, 'inch')
-        v = nullproof('rain24', packet)
+        if 'rain24' in packet:
+            v = nullproof('rain24', packet)
+        else:
+            v = calcRain24(archive, data['dateTime'])
+            v = 0 if v is None else v
         data['rain24'] = convert(v, 'rain', 'group_rain', pu, 'inch')
-        v = nullproof('dayRain', packet)
+        if 'dayRain' in packet:
+            v = nullproof('dayRain', packet)
+        else:
+            v = calcDayRain(archive, data['dateTime'])
+            v = 0 if v is None else v
         data['dayRain'] = convert(v, 'rain', 'group_rain', pu, 'inch')
         data['outHumidity'] = nullproof('outHumidity', packet)
         v = nullproof('barometer', packet)
