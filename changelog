@@ -1,0 +1,17 @@
+0.5 14feb2021
+* move to github
+* make licensing explicit
+
+0.4 01jan2015
+* added binding option for loop or archive
+
+0.3 08dec2014
+* do not use with construction for managers
+
+0.2 06dec2014
+* fixed VERSION tag
+* update for weewx v3
+
+0.1 14aug2014
+* initial release
+
